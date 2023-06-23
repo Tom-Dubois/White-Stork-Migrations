@@ -1,0 +1,463 @@
+Opening and reading data + packages
+```{r}
+library(tidyverse)
+library(dismo)
+library(ggplot2)
+library(dplyr)
+library(amt)
+library(move)
+library(moveVis)
+movement<-read.csv("LifeTrack White Stork Oberschwaben_2014-2019-gps.csv")
+head(movement)
+
+```
+Tracking the movement of a single individual 
+```{r}
+#Separating the data for the individual in the survey 
+num_individuals <-movement %>% 
+  group_by(tag.local.identifier,individual.local.identifier) %>% 
+  count() %>% 
+  arrange(desc(n))
+num_individuals
+#To begin visualising the movement, I will use the movement of only one individual (the one with the least points so it takes less long to process)
+movement_3020<-movement %>% 
+  filter(tag.local.identifier==3020)
+movement_3020
+#Keeping only longitude and latitude for now 
+movement_3020<-movement_3020 %>% 
+  dplyr::select(location.long,location.lat) %>% 
+  filter(!is.na(location.long), !is.na(location.lat))
+movement_3020
+
+#Creating a map with our longitude and lattitude data to visualise the movement
+library(maptools)
+data(wrld_simpl)
+plot(wrld_simpl,xlim=c(-40,30),ylim=c(30,50),axes=TRUE,col="light yellow")
+points(movement_3020$location.long,movement_3020$location.lat,col="blue",pch=20,cex=0.1)
+
+#Visualising movement of every tracked individual
+movement_all<-movement %>% 
+  dplyr::select(location.long,location.lat,tag.local.identifier) %>% 
+  filter(!is.na(location.long), !is.na(location.lat))
+plot(wrld_simpl,xlim=c(-50,75),ylim=c(-30,55),axes=TRUE,col="light yellow")
+points(movement_all$location.long,movement_all$location.lat,col=movement_all$tag.local.identifier,pch=20,cex=0.1)
+box()
+
+head(movement)
+#Checking if the tag.local.identifier is actually representative of the different birds in the study 
+n_birds<-movement %>% 
+  summarise(n_individuals=n_distinct(tag.local.identifier))
+n_birds
+
+world_map <- map_data("world")
+ggplot(world_map, aes(x = long, y = lat, group = group)) +
+  geom_polygon(fill="lightgray", colour = "white")+
+  coord_map(xlim=c(-25,25),ylim=c(35,50))+
+  geom_point(data=movement_3020,aes(x=location.long,y=location.lat),color="red",inherit.aes=FALSE,alpha=0.3,size=0.1)
+
+head(movement_all)
+
+#Visualising the movement of every individual on a different map 
+map_all<-ggplot(world_map, aes(x = long, y = lat, group = group)) +
+  geom_polygon(fill="lightgray", colour = "white")+
+  coord_map(xlim=c(-25,25),ylim=c(20,50))+
+  geom_point(data=movement_all,aes(x=location.long,y=location.lat),inherit.aes=FALSE) +
+  facet_wrap(facets=vars(tag.local.identifier))
+map_all
+ggsave("Movement of all individuals from study.png",map_all)
+
+#Thinning data to have longer intervals between every data entry (Creating each map is currently taking minutes)
+head(movement)
+str(movement)
+#Converting timestamp column to datetime class 
+help(as_datetime)
+movement$timestamp<-as_datetime(movement$timestamp,
+                  format="%Y-%m-%d %H:%M:%OS")
+#Filtering to have data per day instead of per second 
+movement_by_day<-movement %>% 
+  mutate(year=year(timestamp),month=month(timestamp),day=day(timestamp)) %>% 
+  filter(!is.na(location.long),!is.na(location.lat)) %>% 
+  distinct(year,month,day,tag.local.identifier,.keep_all=TRUE) %>% 
+  dplyr::select(timestamp,location.long,location.lat,tag.local.identifier)
+
+#Now mapping the thinned data 
+map_all_thinned<-ggplot(world_map, aes(x = long, y = lat, group = group)) +
+  geom_polygon(fill="lightgray", colour = "white")+
+  coord_map(xlim=c(-25,25),ylim=c(20,60))+
+  geom_point(data=movement_by_day,aes(x=location.long,y=location.lat,colour=timestamp),shape=".",inherit.aes=FALSE) +
+  facet_wrap(facets=vars(tag.local.identifier))
+map_all_thinned
+ggsave("Movement per day with all individuals from study.png",map_all_thinned)
+
+  
+```
+Calculating Net Square Displacement and determining when migrations begin and end 
+```{r}
+#Calculating Net Squared Displacement manually as I cannot figure out how to use the function
+xdist={}
+ydist={}
+nsd={}
+change={}
+attach(movement_by_day)
+individual<-tag.local.identifier[1]
+j=1
+for (i in 1:(nrow(movement_by_day))) {
+  if (individual==tag.local.identifier[i]){
+    xdist[i]<-abs(location.long[i]-location.long[j])
+    ydist[i]<-abs(location.lat[i]-location.lat[j])
+    nsd[i]<-sqrt(xdist[i]^2+ydist[i]^2)
+    change[i]=0
+  }
+  else {
+    j=i
+    individual=tag.local.identifier[i]
+    xdist[i]<-abs(location.long[i]-location.long[j])
+    ydist[i]<-abs(location.lat[i]-location.lat[j])
+    nsd[i]<-sqrt(xdist[i]^2+ydist[i]^2)
+  }
+}
+detach(movement_by_day)
+movement_by_day$NSD<-nsd
+
+#Plotting NSD for each individual 
+NSD<-ggplot(movement_by_day,aes(x=timestamp,y=NSD)) +
+  geom_point(shape=".") + 
+  facet_wrap(facets=vars(tag.local.identifier))+
+  theme(axis.text.x=element_text(angle=90))
+ggsave("NSD for all individuals through time.png",NSD)
+
+#Plotting on graphics instead of ggplot to use locator function 
+#Creating a list of the different individuals 
+identifier<-movement_by_day %>% 
+  distinct(tag.local.identifier) %>% 
+  dplyr::select(tag.local.identifier)
+#Plotting by individual 
+#Setting xlim and ylim so that the plots have the same scale to use locator function
+#Using individual 2543 for the start and end date as it survived for the entire study 
+dates_2543<-movement_by_day %>% 
+  filter(tag.local.identifier==2543) %>% 
+  summarise(start=min(timestamp),end=max(timestamp))
+start_date<-dates_2543[1,1]
+end_date<-dates_2543[1,2]
+#Plotting NSD and creating Data frame with date for start and end of migration for each individual
+migrations_dates<-data.frame(date=c(),individual=c())
+for (i in 1:nrow(identifier)){
+  individual<-movement_by_day %>% 
+    filter(tag.local.identifier==identifier[i,])
+  plot(individual$timestamp,individual$NSD,main=identifier[i,],xlim=c(start_date,end_date),ylim=c(0,25))
+  clicks<-locator()
+  individual<-rep(identifier[i,],length(clicks$x))
+  dates<-as.POSIXct(clicks$x,origin="1970-01-01")
+  migrations<-data.frame(date=dates)
+  migrations<-cbind(migrations,individual)
+  migrations_dates<-rbind(migrations_dates,migrations)
+}
+#Saving the dataset for later use 
+write.csv(migrations_dates,file="C:/Users/Tom Dubois/OneDrive/Desktop/Year 1 UCL/Summer internship/Analysing white stork movement data/migration dates.csv")
+getwd()
+migrations_dates<-read.csv("C:/Users/Tom Dubois/OneDrive/Desktop/Year 1 UCL/Summer internship/Analysing white stork movement data/migration dates.csv")
+#Modifying original data-set to only keep points where birds are migrating
+movement_only_migrate<-data.frame(timestamp=c(),location.long=c(),location.lat=c(),tag.local.identifier=c(),NSD=c())
+for (i in 1:nrow(identifier)){
+  dates_individual<-migrations_dates %>% 
+    filter(individual==identifier[i,])
+  j=2
+  movement_by_day_individual<-movement_by_day %>% 
+    filter(tag.local.identifier==identifier[i,]) %>% 
+    filter(!between(timestamp,as.POSIXct(start_date),as.POSIXct(dates_individual$date[1])))
+  repeat{
+    if (j<nrow(dates_individual)){
+      movement_by_day_individual<-movement_by_day_individual %>% 
+        filter(!between(timestamp,as.POSIXct(dates_individual$date[j]),as.POSIXct(dates_individual$date[j+1])))
+      j=j+2
+    }
+    else{
+      movement_by_day_individual<-movement_by_day_individual %>% 
+        filter(!between(timestamp,as.POSIXct(dates_individual$date[j]),as.POSIXct(end_date)))
+      movement_only_migrate<-rbind(movement_only_migrate,movement_by_day_individual)
+      break
+    }
+  }
+}
+write.csv(movement_only_migrate,file="C:/Users/Tom Dubois/OneDrive/Desktop/Year 1 UCL/Summer internship/Analysing white stork movement data/Dataset with only migrations.csv")
+
+
+#Checking that only migrations remain by plotting NSD 
+NSD<-ggplot(movement_only_migrate,aes(x=timestamp,y=NSD)) +
+  geom_point(shape=".") + 
+  facet_wrap(facets=vars(tag.local.identifier))+
+  theme(axis.text.x=element_text(angle=90))
+ggsave("NSD only migrate through time.png",NSD)
+
+map_only_migration<-ggplot(world_map, aes(x = long, y = lat, group = group)) +
+  geom_polygon(fill="lightgray", colour = "white")+
+  coord_map(xlim=c(-25,25),ylim=c(20,60))+
+  geom_point(data=movement_only_migrate,aes(x=location.long,y=location.lat,colour=timestamp),shape=".",inherit.aes=FALSE) +
+  facet_wrap(facets=vars(tag.local.identifier))
+map_only_migration
+
+#Visualising every migration separately for each individual 
+#Adding a migration counter for each individual 
+date<-movement_only_migrate %>% 
+  mutate(day=day(timestamp),month=month(timestamp))
+counter=1
+movement_only_migrate$counter[1]=counter
+for (i in 1:(nrow(movement_only_migrate)-1)){
+  diff_in_dates<-as.numeric(difftime(timestamp[i+1],timestamp[i],units="days"))
+  abs_diff<-abs(diff_in_dates)
+  if (abs_diff<30){
+    movement_only_migrate$counter[i+1]=counter
+  }
+  else {
+    if (tag.local.identifier[i+1]==tag.local.identifier[i]){
+      counter=counter+1
+      movement_only_migrate$counter[i+1]=counter
+    }
+    else {
+      counter=1
+      movement_only_migrate$counter[i+1]=counter
+    }
+  }
+}
+#Plotting each migration for every individual 
+for (i in 1:nrow(identifier)){
+  migration_individual<-movement_only_migrate %>% 
+  filter(tag.local.identifier==identifier[i,])
+  if(nrow(migration_individual>=1)){
+  map<-ggplot(world_map, aes(x = long, y = lat, group = group)) +
+    geom_polygon(fill="lightgray", colour = "white")+
+    coord_map(xlim=c(-25,25),ylim=c(20,60))+
+    geom_point(data=migration_individual,aes(x=location.long,y=location.lat,colour=timestamp),inherit.aes=FALSE) +
+    facet_wrap(facets=vars(counter))
+  name_of_map<-paste("Map of migrations of",identifier[i,],".png")
+  ggsave(name_of_map,map)
+  }
+}
+
+
+
+```
+Making an animation of the movement 
+```{r}
+
+#Converting timestamp column to POSIXct format 
+movement$timestamp<-as_datetime(movement$timestamp,
+                  format="%Y-%m-%d %H:%M:%OS")
+#Only using one individual and only for one year (using the entire dataset crashed my computer)
+#Reading the dates for migrations to give a time range for individual 2543
+migration_dates<-read.csv("migration dates.csv")
+movement_2543_1yr<-movement %>% 
+  filter(tag.local.identifier==2543) %>% 
+  filter(between(timestamp,as.POSIXct(migration_dates[3,2]),as.POSIXct(migration_dates[8,2])))
+#This interval is around 1 year 
+head(movement_2543_1yr)
+
+
+#Converting movement dataframe to a spatial object
+movement_2543_spatial<-df2move(
+  movement_2543_1yr,proj = "+proj=longlat +datum=WGS84", x = "location.long", 
+  y = "location.lat", time = "timestamp", track_id = "tag.local.identifier", 
+  removeDuplicatedTimestamps = TRUE)
+
+#Checking sampling rate 
+lag <- unlist(timeLag(movement_2543_spatial, unit = "mins"))
+median(lag)
+sd(lag)
+hist(lag)
+
+#Choosing a frame rate of 3 hours (arbitrary)
+movement_2543_spatial<-align_move(movement_2543_spatial,res=180,unit="mins")
+length(unique(timestamps(movement_2543_spatial)))
+
+#Defining a manual extent for which we want to animate 
+ext <- extent(movement_2543_spatial)*1.1
+ext@xmin <- ext@xmin*1.3
+ext@xmax <- ext@xmax*1.3
+
+
+#Creating frames 
+frames_2543<-frames_spatial(
+  movement_2543_spatial,ext=ext,
+  trace_show=T,trace_colour="lightcoral",
+  map_type = "terrain"
+)
+frames_2543[2000]
+
+#Customising frames 
+frames_2543<-frames_2543 %>% 
+  add_labels(title="White stork migration from 2014-2015 (individual 2543)") %>% 
+  add_timestamps(type="label") %>% 
+  add_progress(colour = "white")
+
+#Animating 
+animate_frames(frames_2543, width = 800, height = 800,
+               out_file = "2543 migration first year.mov", end_pause = 1)
+```
+Analysing data in more detail with knowledge from course: Azimuth, turning angle, autocorrelation, etc 
+```{r}
+#Creating move object out of the downloaded dataset 
+movement.df<-read.csv("LifeTrack White Stork Oberschwaben_2014-2019-gps.csv",as.is=T)
+
+#Converting date/time to POSIXct format 
+movement.df$timestamp<-as.POSIXct(movement.df$timestamp,format="%Y-%m-%d %H:%M:%OS",tz="UTC")
+
+#Ensuring that timestamps and individuals are ordered
+movement.df<-movement.df[order(movement.df$tag.local.identifier,movement.df$timestamp),]
+
+#Converting data frame to move object (did not add the data argument as I was getting an error, might have to check that later)
+movement.move<-move(x=movement.df$location.long,y=movement.df$location.lat,
+             time=movement.df$timestamp, NSD=movement.df$NSD,
+              proj=crs("+proj=longlat +ellps=WGS84"),
+             animal=movement.df$individual.local.identifier, sensor="gps")
+movement.move[[1]]
+
+#Checking for duplicate values 
+individuals<-unique(movement.df$individual.local.identifier)
+individuals
+n_dups<-0
+for (i in individuals){
+  indiv<-movement.df[movement.df$individual.local.identifier==i,]
+  dup<-getDuplicatedTimestamps(indiv)
+  n_dups<-length(dup)+n_dups
+}
+n_dups #n_dups is equal to 0 so there are no timestamp duplicates 
+
+#Other method for duplicates (found after)
+getDuplicatedTimestamps(x=as.factor(movement.df$individual.local.identifier),timestamps=movement.df$timestamp)
+
+#Plotting to verify that move object has been created correctly 
+plot(movement.move,xlab="Longitude",ylab="Latitude",type="b",pch=16,cex=0.5,col=c("blue","red","green","orange","yellow","pink","purple","lightblue","brown","maroon","violet","darkgreen","cyan","darkblue","black","khaki","indianred1","magenta")[movement.move@trackId])
+
+movement.df$timestamp[1]
+movement.df$timestamp[2]
+
+###Segmenting data into migratory states ###
+
+#Removing NA locations from the dataset 
+movement.df<-movement.df %>% 
+  filter(!is.na(location.long) & !is.na(location.lat))
+
+#Code for calculating NSD 
+attach(movement.df)
+xdist={}
+ydist={}
+nsd={}
+individual<-individual.local.identifier[1] #individual variable will be used to determine if a change in individual has occurred (in which case origin must be changed)
+j=1 #Variable used to set longitude and latitude of origin for calculation of NSD 
+for (i in 1:(nrow(movement.df))) {
+  if (individual==individual.local.identifier[i]){ #Checking whether individual is the same as in the last round
+    xdist[i]<-abs(location.long[i]-location.long[j])
+    ydist[i]<-abs(location.lat[i]-location.lat[j])
+    nsd[i]<-sqrt(xdist[i]^2+ydist[i]^2)
+  }
+  else { #Individual has changed so we set a new origin 
+    j=i
+    individual=individual.local.identifier[i]
+    xdist[i]<-abs(location.long[i]-location.long[j])
+    ydist[i]<-abs(location.lat[i]-location.lat[j])
+    nsd[i]<-sqrt(xdist[i]^2+ydist[i]^2)
+  }
+}
+detach(movement.df)
+movement.df$NSD<-nsd
+head(movement.df)
+
+#Determining dates for changes in migratory states with NSD (using full original dataset)
+
+#Defining start and end date of study (using individual 2543 as it survived the entire study)
+dates_2543<-movement.df %>% 
+  filter(tag.local.identifier==2543) %>% 
+  summarise(start=min(timestamp),end=max(timestamp))
+start_date<-dates_2543[1,1]
+end_date<-dates_2543[1,2]
+
+#Using locator function to determine dates for changes in migratory states 
+migratory_changes<-data.frame(date=c(),individual=c())
+for (i in 1:length(individuals)){
+  movement_individual<-movement.df %>% 
+    filter(individual.local.identifier==individuals[i])
+  plot(movement_individual$timestamp,movement_individual$NSD,main=individuals[i],xlim=c(start_date,end_date),ylim=c(0,25),type="l")
+  clicks<-locator()
+  dates<-c(movement_individual$timestamp[1],as.POSIXct(clicks$x,origin="1970-01-01"),movement_individual$timestamp[nrow(movement_individual)])
+  individual<-rep(individuals[i],length(dates))
+  migrations<-data.frame(date=dates)
+  migrations<-cbind(migrations,individual)
+  migratory_changes<-rbind(migratory_changes,migrations)
+}
+
+write.csv(migratory_changes,file="C:/Users/Tom Dubois/OneDrive/Desktop/Year 1 UCL/Summer internship/Analysing white stork movement data/Dates for changes in migratory states of each indivdual.csv")
+#New individuals list with the format matching the move object
+inds <- unique(movement.move@trackId)
+#Adding column with Breeding, Migration South, Wintering, and Migration North categories
+
+#Adding state column to indicate migratory state of individual at every timestamp (initialising at 0)
+movement.move$state<-1
+nrow(individuals)
+length(individuals)
+for (i in 1:length(individuals)) {
+  migratory_changes_individual<-migratory_changes %>% 
+    filter(individual==individuals[i])
+  state<-1
+  for (j in 1:(nrow(migratory_changes_individual)-1)){
+     movement.move$state[movement.move@trackId==inds[i] & movement.move$time>=as.POSIXct(migratory_changes_individual[j,1])& movement.move$time<=as.POSIXct(migratory_changes_individual[j+1,1])]<-state
+    if (state==4){
+      state<-1
+    } else {
+      state<-state+1
+    }
+  }
+}
+
+#Creating factor of state column 
+categories<- c("1"="Breeding", "2"="South Migration", 
+               "3"="Wintering", "4"="North Migration")
+movement.move$state<-factor(categories[movement.move$state],levels=c("Breeding","South Migration", "Wintering", "North Migration"))
+
+save(movement.move,file="C:/Users/Tom Dubois/OneDrive/Desktop/Year 1 UCL/Summer internship/Analysing white stork movement data/Move object of white stork migrations segmented by migratory state.RData")
+
+#Plotting NSD with legend for migratory state to check that data has been segmented correctly 
+movement.move$NSD<-movement.df$NSD
+for (i in 1:length(inds)){
+  plot(movement.move[[i]]$time,movement.move[[i]]$NSD,main=inds[i],xlim=c(start_date,end_date),ylim=c(0,25),col=movement.move[[i]]$state,xlab="time",ylab="Net Squared Displacement")
+  legend("topright",legend=unique(movement.move[[i]]$state),col=unique(legend=movement.move[[i]]$state),fill=unique(movement.move[[i]]$state),horiz=T,cex=0.5)
+}
+
+##Plotting azimuth, turning angle, and speeds## 
+
+azimuth<-data.frame(D=angle(movement.move[[1]]),V=move::speed(movement.move[[1]]),Migratory_State=movement.move[[1]]$state[-1])
+library(circular)
+#Defining direction as circular 
+azimuth$Dcirc<-as.circular(azimuth$D, 
+                 rotation="clock", 
+                 units="degrees", 
+                 type="angles", 
+                 modulo="asis", 
+                 zero=0, 
+                 template="geographic")
+
+#Defining a vector to set ordering of plot 
+migratory_states<-levels(movement.move[[2]]$state)
+#Changing margins of plot 
+par(mar=rep(1,4))
+#Plotting all azimuths
+plot(azimuth$Dcirc, stack=T, shrink=1.6, pch=16, sep=0.05, col="grey")
+# Looping through seasons and plotting line densities 
+for(i in 1:length(migratory_states)){
+  # subset the azimuth
+  x <- azimuth[azimuth$Migratory_State==migratory_states[i],'Dcirc']
+  # calculate density and plot as a line
+  lines(density(x, bw=180, kernel="vonmises"), lwd=2, lty=i)
+  # draw an arrow showing mean and resultant length
+  arrows.circular(mean(x), y=rho.circular(x), lwd=2, length=0.1, lty=i)
+}
+# add a legend
+legend("bottomleft", lty=c(1,2,3,4), state, bty="n", cex=0.85)
+
+
+
+
+ 
+
+
+```
+
