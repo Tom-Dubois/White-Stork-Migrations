@@ -456,7 +456,11 @@ legend("bottomleft", lty=c(1,2,3,4), state, bty="n", cex=0.85)
 
 
 
+<<<<<<< HEAD
  #I just made a github account
+=======
+ 
+>>>>>>> 55e55043bd38907f1747dd5d74abc829a696b961
 
 
 ```
